@@ -12,6 +12,8 @@ scipy = "^1.15.2"
 xgboost = "^3.0.0"
 shap = "^0.47.2"
 kagglehub = "^0.3.11"
+seaborn = "^0.13.2"
+matplotlib = "^3.10.1"
 
 [tool.poetry.group.dev.dependencies]
 jupyter = "^1.1.1"
