@@ -1605,6 +1605,22 @@ files = [
 traitlets = "*"
 
 [[package]]
+name = "meteostat"
+version = "1.6.8"
+description = "Access and analyze historical weather and climate data with Python."
+optional = false
+python-versions = ">=3.6.0"
+files = [
+    {file = "meteostat-1.6.8-py3-none-any.whl", hash = "sha256:859a7f2cbf3d902e9ce48363ff9490385a22296742ced7070360d06d3415ef97"},
+    {file = "meteostat-1.6.8.tar.gz", hash = "sha256:e4e1e3df79e52d45116a12a5ac703acf75d521356de072052c1f60e42160a74d"},
+]
+
+[package.dependencies]
+numpy = "*"
+pandas = ">=1.1"
+pytz = "*"
+
+[[package]]
 name = "mistune"
 version = "3.1.3"
 description = "A sane and fast Markdown parser with useful plugins and renderers"
@@ -3307,4 +3323,4 @@ scikit-learn = ["scikit-learn"]
 [metadata]
 lock-version = "2.0"
 python-versions = "^3.10"
-content-hash = "e2090fcbc07106a14f5026c03c76f00c6866a3d158ea165c1a681458e47622a5"
+content-hash = "25b175bf34f2bcf9057dad4d4243426f23c415097969e4f772484cb46d36c3ba"
