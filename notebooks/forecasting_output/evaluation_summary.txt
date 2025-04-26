@@ -1,0 +1,14 @@
+--- Evaluation Metrics ---
+
+ARIMA_Only:
+  RMSE: 1322.5082
+  MAE: 1033.0784
+  MAPE: 3.3707
+
+ARIMA_LSTM_CNN_Hybrid:
+  RMSE: 310.1681
+  MAE: 221.3413
+  MAPE: 0.6928
+
+--- Runtime ---
+Total Script Runtime: 1644.95 seconds
