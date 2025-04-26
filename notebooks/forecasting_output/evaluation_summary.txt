@@ -6,9 +6,9 @@ ARIMA_Only:
   MAPE: 3.3707
 
 ARIMA_LSTM_CNN_Hybrid:
-  RMSE: 310.1681
-  MAE: 221.3413
-  MAPE: 0.6928
+  RMSE: 305.6634
+  MAE: 218.6390
+  MAPE: 0.6837
 
 --- Runtime ---
-Total Script Runtime: 1644.95 seconds
+Total Script Runtime: 1611.34 seconds

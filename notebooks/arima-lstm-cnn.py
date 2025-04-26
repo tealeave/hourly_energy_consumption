@@ -46,6 +46,7 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(
 TARGET = 'PJME_MW'
 DATA_PATH = '../data/3/PJME_hourly.csv' # Adjust if needed
 OUTPUT_DIR = 'forecasting_output' # Directory to save logs and plots
+LOG_FILENAME = 'forecasting_run.log' # Name for the log file
 N_STEPS = 24 # Sequence length for LSTM/CNN
 BATCH_SIZE = 64
 EPOCHS = 50 # Max epochs for LSTM/CNN training
@@ -57,6 +58,26 @@ SEASONAL_ORDER = (1, 0, 0, 24)
 
 # --- Create Output Directory ---
 os.makedirs(OUTPUT_DIR, exist_ok=True)
+
+# --- Set up Logging to Console and File ---
+log_formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
+logger = logging.getLogger() # Get the root logger
+logger.setLevel(logging.INFO) # Set the minimum logging level for the logger
+
+# Clear existing handlers (optional, but good practice if the script might be run multiple times in one session)
+if logger.hasHandlers():
+    logger.handlers.clear()
+
+# Create File Handler
+log_file_path = os.path.join(OUTPUT_DIR, LOG_FILENAME)
+file_handler = logging.FileHandler(log_file_path)
+file_handler.setFormatter(log_formatter)
+logger.addHandler(file_handler)
+
+# Create Console Handler
+console_handler = logging.StreamHandler() # Outputs to stderr by default
+console_handler.setFormatter(log_formatter)
+logger.addHandler(console_handler)
 
 # --- Check for GPU Availability ---
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -549,20 +570,21 @@ def evaluate_predictions(y_true, y_pred, model_name):
 # ==============================================================================
 # 9. Visualization
 # ==============================================================================
-# ==============================================================================
-# 9. Visualization
-# ==============================================================================
-def plot_forecasts(df, target_col, pred_cols, title, filename, zoom_days=7):
+def plot_forecasts(df, target_col, pred_cols, title, filename, zoom_days=7, main_alpha=0.6): # Added main_alpha parameter
     """Plots and saves actual vs. predicted values."""
     logging.info(f"Generating forecast plot: {title}")
     fig, ax = plt.subplots(figsize=(15, 6))
-    df[target_col].plot(ax=ax, label='Actual', style='.', alpha=0.7)
+
+    # Plot actual with adjusted alpha
+    df[target_col].plot(ax=ax, label='Actual', style='.', alpha=main_alpha) # MODIFIED alpha
+
     # Use consistent styles for the main plot
     main_styles = ['-', '--']
     for i, col in enumerate(pred_cols):
         style = main_styles[i % len(main_styles)] # Cycle through styles if more preds than styles
         if col in df.columns:
-            df[col].plot(ax=ax, label=col.replace('_', ' ').title(), style=style, alpha=0.9)
+            # Plot predictions with adjusted alpha
+            df[col].plot(ax=ax, label=col.replace('_', ' ').title(), style=style, alpha=main_alpha) # MODIFIED alpha
 
     ax.set_title(title)
     ax.set_ylabel('MW')
@@ -571,7 +593,7 @@ def plot_forecasts(df, target_col, pred_cols, title, filename, zoom_days=7):
     logging.info(f"Forecast plot saved to {filename}")
     plt.close(fig)
 
-    # Zoomed plot
+    # Zoomed plot (Keeps its own styling logic, doesn't use main_alpha directly here)
     if zoom_days and len(df) > zoom_days * 24:
         # Ensure start_date allows for a full zoom_days period if possible
         max_start_index = max(0, len(df) - zoom_days * 24)
@@ -585,14 +607,14 @@ def plot_forecasts(df, target_col, pred_cols, title, filename, zoom_days=7):
 
         if not zoom_df.empty:
             fig_zoom, ax_zoom = plt.subplots(figsize=(15, 6))
-            # Plot actuals with line and marker for zoom
+            # Plot actuals with line and marker for zoom (alpha=1 by default here)
             zoom_df[target_col].plot(ax=ax_zoom, label='Actual', style='.-')
-            # Use the same base styles but add markers for predictions
+            # Use the same base styles but add markers for predictions (alpha=1 by default here)
             for i, col in enumerate(pred_cols):
                  style = main_styles[i % len(main_styles)] # Use the same base style as main plot
                  if col in zoom_df.columns:
                     # Use original style but add a marker for zoomed plot clarity
-                    zoom_df[col].plot(ax=ax_zoom, label=col.replace('_', ' ').title(), style=style, marker='.') # CORRECTED LINE
+                    zoom_df[col].plot(ax=ax_zoom, label=col.replace('_', ' ').title(), style=style, marker='.')
 
             ax_zoom.set_title(f'{title} (Zoomed: {start_date.date()} to {end_date.date()})')
             ax_zoom.set_ylabel('MW')
@@ -718,7 +740,8 @@ if __name__ == "__main__":
         target_col=TARGET,
         pred_cols=['ARIMA_pred', 'Combined_pred'],
         title='Test Set: Actual vs. Forecasts',
-        filename=os.path.join(OUTPUT_DIR, 'test_forecast_comparison.png')
+        filename=os.path.join(OUTPUT_DIR, 'test_forecast_comparison.png'),
+        main_alpha=0.5
     )
 
     # --- Error Analysis (Optional - uncomment if needed) ---
