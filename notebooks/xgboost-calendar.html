@@ -7517,8 +7517,25 @@ a.anchor-link {
 </div>
 <div class="jp-InputArea jp-Cell-inputArea"><div class="jp-InputPrompt jp-InputArea-prompt">
 </div><div class="jp-RenderedHTMLCommon jp-RenderedMarkdown jp-MarkdownOutput" data-mime-type="text/markdown">
-<h2 id="Hourly-Energy-Consumption-Forecasting-with-XGBoost-(Calendar-Features-Only)">Hourly Energy Consumption Forecasting with XGBoost (Calendar Features Only)<a class="anchor-link" href="#Hourly-Energy-Consumption-Forecasting-with-XGBoost-(Calendar-Features-Only)">¶</a></h2><p>This notebook demonstrates forecasting hourly electricity demand using XGBoost, relying <em>only</em> on calendar-based features derived from the timestamp.</p>
-<p>Here’s a concise write-up of the notebook’s workflow and its key takeaways:</p>
+<h2 id="Hourly-Energy-Consumption-Forecasting-with-XGBoost-(Calendar-Features-Only)">Hourly Energy Consumption Forecasting with XGBoost (Calendar Features Only)<a class="anchor-link" href="#Hourly-Energy-Consumption-Forecasting-with-XGBoost-(Calendar-Features-Only)">¶</a></h2><h3 id="Introduction-to-XGBoost-for-Time-Series-Forecasting"><strong>Introduction to XGBoost for Time-Series Forecasting</strong><a class="anchor-link" href="#Introduction-to-XGBoost-for-Time-Series-Forecasting">¶</a></h3><p><strong>XGBoost (Extreme Gradient Boosting)</strong> is a powerful, scalable machine learning algorithm renowned for its speed, accuracy, and interpretability in structured data tasks. While not inherently time-aware, it excels at time-series forecasting when paired with thoughtful <strong>feature engineering</strong> to encode temporal patterns.</p>
+<h3 id="Key-Advantages-for-Time-Series"><strong>Key Advantages for Time Series</strong><a class="anchor-link" href="#Key-Advantages-for-Time-Series">¶</a></h3><ol>
+<li><p><strong>Nonlinear Pattern Capture</strong>:<br/>
+XGBoost’s tree-based structure models complex interactions (e.g., how <em>hour-of-day</em> and <em>day-of-week</em> jointly influence energy demand) that linear models like ARIMA cannot capture.</p>
+</li>
+<li><p><strong>Feature Importance Insights</strong>:<br/>
+Built-in metrics and tools like SHAP (SHapley Additive exPlanations) quantify how each engineered feature (e.g., <code>hour</code>, <code>month</code>) contributes to predictions, aiding model debugging and trust.</p>
+</li>
+<li><p><strong>Robustness &amp; Efficiency</strong>:<br/>
+Handles large datasets (e.g., hourly data over decades) gracefully, resists overfitting via regularization, and supports early stopping for optimal training.</p>
+</li>
+</ol>
+<h3 id="Why-Calendar-Features?"><strong>Why Calendar Features?</strong><a class="anchor-link" href="#Why-Calendar-Features?">¶</a></h3><p>In this workflow, XGBoost relies <strong>solely on calendar-derived features</strong> (no weather/exogenous data) to forecast energy demand. This approach:</p>
+<ul>
+<li>Extracts cyclical patterns (e.g., daily, weekly, seasonal cycles) from timestamps.</li>
+<li>Avoids dependency on external data sources, making it lightweight and broadly applicable.</li>
+<li>Demonstrates how even simple temporal features can encode rich, actionable signals for tree-based models.</li>
+</ul>
+<h3 id="Workflow-Logic"><strong>Workflow Logic</strong><a class="anchor-link" href="#Workflow-Logic">¶</a></h3><p>By treating time series as a supervised regression problem (predicting future values from engineered past features), XGBoost bypasses traditional time-series assumptions (e.g., stationarity) and leverages its strength in tabular data modeling. The final forecast combines learned hierarchical relationships (e.g., “3 PM on summer weekends” correlates with high AC usage) into a single prediction.</p>
 <p><strong>Workflow Overview</strong></p>
 <ol>
 <li><p><strong>Data Preparation</strong></p>

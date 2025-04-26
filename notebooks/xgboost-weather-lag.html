@@ -7528,6 +7528,12 @@ a.anchor-link {
 </div>
 <div class="jp-InputArea jp-Cell-inputArea"><div class="jp-InputPrompt jp-InputArea-prompt">
 </div><div class="jp-RenderedHTMLCommon jp-RenderedMarkdown jp-MarkdownOutput" data-mime-type="text/markdown">
+<h2 id="Introduction-to-XGBoost-with-Calendar,-Weather,-and-Lagged-Features-for-Energy-Forecasting"><strong>Introduction to XGBoost with Calendar, Weather, and Lagged Features for Energy Forecasting</strong><a class="anchor-link" href="#Introduction-to-XGBoost-with-Calendar,-Weather,-and-Lagged-Features-for-Energy-Forecasting">¶</a></h2><p>This workflow demonstrates how <strong>XGBoost</strong>, a gradient-boosted tree model, can be enhanced for time-series forecasting by combining <strong>calendar features</strong>, <strong>weather variables</strong>, and <strong>lagged load values</strong> to predict hourly energy demand. Unlike simpler calendar-only approaches, integrating weather data and historical consumption patterns allows the model to capture both environmental drivers and temporal autocorrelation, crucial for robust short- and long-term predictions.</p>
+<h3 id="Why-Combine-Calendar,-Weather,-and-Lagged-Features?"><strong>Why Combine Calendar, Weather, and Lagged Features?</strong><a class="anchor-link" href="#Why-Combine-Calendar,-Weather,-and-Lagged-Features?">¶</a></h3><ul>
+<li><strong>Calendar Features</strong>: Encode recurring temporal patterns (hourly, daily, seasonal cycles) and holidays, anchoring baseline demand expectations.</li>
+<li><strong>Weather Variables</strong>: Add exogenous context (temperature, humidity, wind) to model deviations from baseline due to weather extremes (heatwaves, cold snaps).</li>
+<li><strong>Lagged Load Features</strong>: Incorporate historical consumption values (e.g., 1, 24, 168 hours prior) to explicitly capture <strong>autocorrelation</strong> and inertia in energy demand, particularly vital for short-term forecasting.</li>
+</ul>
 <p><strong>Workflow Overview</strong></p>
 <ol>
 <li><p><strong>Data Loading &amp; Preprocessing</strong></p>
