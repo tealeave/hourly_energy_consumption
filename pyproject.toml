@@ -3,6 +3,7 @@ name = "hourly-energy-consumption"
 version = "0.1.0"
 description = ""
 authors = ["David Lin"]
+package-mode = false
 readme = "README.md"
 
 [tool.poetry.dependencies]

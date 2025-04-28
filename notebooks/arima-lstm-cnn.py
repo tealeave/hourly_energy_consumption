@@ -91,11 +91,11 @@ def load_and_preprocess_data():
     pjme['is_weekend'] = pjme.index.weekday >= 5
     pjme['is_dayoff'] = pjme['is_holiday'] | pjme['is_weekend']
     pjme.drop(columns=['is_holiday', 'is_weekend'], inplace=True)
-    pjme['hour']       = pjme.index.hour
-    pjme['dayofweek']  = pjme.index.weekday
-    pjme['month']      = pjme.index.month
-    pjme['year']       = pjme.index.year
-    pjme['dayofyear']  = pjme.index.dayofyear
+    # pjme['hour']       = pjme.index.hour
+    # pjme['dayofweek']  = pjme.index.weekday
+    # pjme['month']      = pjme.index.month
+    # pjme['year']       = pjme.index.year
+    # pjme['dayofyear']  = pjme.index.dayofyear
 
     logging.info("Fetching and processing weather data...")
     # --- Fetch and Process Weather Data ---
@@ -375,60 +375,95 @@ def forecast_validation_set(arima_results, train_df, val_df, target_col):
     update_interval = 168  # Weekly updates (24*7 hours)
     window_size = 168 * 4  # Keep 4 weeks of history for updates
     
-    try:
-        for i in range(len(val_df)):
-            if i % 1000 == 0:
-                logging.info(f"Validation forecasting progress: {i}/{len(val_df)} steps")
-                
-            # 1. Forecast next step
-            fc = current_model.get_forecast(steps=1)
-            val_predictions.append(fc.predicted_mean.iloc[0])
+    for i in range(len(val_df)):
+        if i % 1000 == 0:
+            logging.info(f"Validation forecasting progress: {i}/{len(val_df)} steps")
             
-            # 2. Store actual value in FIFO buffer
-            buffer.append(val_df[target_col].iloc[i])
-            if len(buffer) > window_size:
-                buffer.pop(0)  # Maintain fixed window size
-                
-            # 3. Update model weekly with most recent data
-            if (i + 1) % update_interval == 0 and len(buffer) >= update_interval:
+        # 1. Forecast next step
+        fc = current_model.get_forecast(steps=1)
+        val_predictions.append(fc.predicted_mean.iloc[0])
+        
+        # 2. Store actual value in FIFO buffer
+        buffer.append(val_df[target_col].iloc[i])
+        if len(buffer) > window_size:
+            buffer.pop(0)  # Maintain fixed window size
+            
+        # 3. Update model weekly with most recent data
+        if (i + 1) % update_interval == 0 and len(buffer) >= update_interval:
+            # Create a proper Series with the correct index
+            # Only use the most recent update_interval points from buffer
+            recent_buffer = buffer[-update_interval:]
+            # Get the corresponding indices
+            recent_index = val_df.index[max(0, i+1-update_interval):i+1]
+            
+            # Ensure lengths match exactly
+            if len(recent_buffer) != len(recent_index):
+                # Adjust either buffer or index to make lengths match
+                if len(recent_buffer) < len(recent_index):
+                    recent_index = recent_index[-len(recent_buffer):]
+                else:
+                    recent_buffer = recent_buffer[-len(recent_index):]
+            
+            # Create Series with matching lengths
+            update_data = pd.Series(recent_buffer, index=recent_index)
+            
+            # Check model supports update
+            if hasattr(current_model, 'update'):
+                logging.info(f"Updating model at validation step {i+1}")
                 try:
-                    # Use ONLY the latest update_interval points
-                    update_data = pd.Series(
-                        buffer[-update_interval:],
-                        index=val_df.index[i+1-update_interval:i+1]
-                    )
-                    # Check model supports update
-                    if hasattr(current_model, 'update'):
-                        logging.info(f"Updating model at validation step {i+1}")
-                        current_model = current_model.update(update_data)
-                    else:
-                        # Fallback: re-fit model on combined history
-                        logging.info(f"Re-fitting model at validation step {i+1}")
-                        combined_series = pd.concat([
-                            train_df[target_col],
-                            pd.Series(buffer, index=val_df.index[:i+1])
-                        ])
+                    current_model = current_model.update(update_data)
+                except Exception as e:
+                    logging.error(f"Validation update failed at step {i}: {str(e)}")
+                    # Continue with re-fitting instead of raising an error
+                    logging.info("Falling back to re-fitting the model")
+                    # Use the last window_size points from training + current buffer
+                    train_history = train_df[target_col].iloc[-window_size:] if len(train_df) > window_size else train_df[target_col]
+                    
+                    # Combine with training data
+                    combined_series = pd.concat([train_history, update_data])
+                    
+                    # Ensure no duplicate indices
+                    combined_series = combined_series[~combined_series.index.duplicated(keep='last')]
+                    
+                    try:
                         current_model = ARIMA(
                             combined_series,
                             order=current_model.model.order,
                             seasonal_order=current_model.model.seasonal_order
                         ).fit()
+                    except Exception as e2:
+                        logging.error(f"Validation re-fit also failed at step {i}: {str(e2)}")
+                        # Continue with the existing model
+            else:
+                # Fallback: re-fit model on combined history
+                logging.info(f"Re-fitting model at validation step {i+1}")
+                # Use the last window_size points from training + current buffer
+                train_history = train_df[target_col].iloc[-window_size:] if len(train_df) > window_size else train_df[target_col]
+                
+                # Combine with training data
+                combined_series = pd.concat([train_history, update_data])
+                
+                # Ensure no duplicate indices
+                combined_series = combined_series[~combined_series.index.duplicated(keep='last')]
+                
+                try:
+                    current_model = ARIMA(
+                        combined_series,
+                        order=current_model.model.order,
+                        seasonal_order=current_model.model.seasonal_order
+                    ).fit()
                 except Exception as e:
-                    logging.error(f"Validation update failed at step {i}: {str(e)[:200]}")
-                    buffer = buffer[-update_interval:]  # Reset buffer
+                    logging.error(f"Validation re-fit failed at step {i}: {str(e)}")
+                    # Continue with the existing model
 
-        val_df['ARIMA_pred'] = val_predictions
-        
-        # Calculate validation metrics
-        val_rmse = np.sqrt(mean_squared_error(val_df[target_col], val_df['ARIMA_pred']))
-        val_mae = mean_absolute_error(val_df[target_col], val_df['ARIMA_pred'])
-        logging.info(f"Validation RMSE: {val_rmse:.2f}, MAE: {val_mae:.2f}")
-        
-        return True
+    val_df['ARIMA_pred'] = val_predictions
     
-    except Exception as e:
-        logging.error(f"Critical error in validation forecasting: {str(e)}")
-        return False
+    # Calculate validation metrics
+    val_rmse = np.sqrt(mean_squared_error(val_df[target_col], val_df['ARIMA_pred']))
+    val_mae = mean_absolute_error(val_df[target_col], val_df['ARIMA_pred'])
+    logging.info(f"Validation RMSE: {val_rmse:.2f}, MAE: {val_mae:.2f}")
+    
+    return True
 
 
 def forecast_test_set(arima_results, train_df, val_df, test_df, target_col):
@@ -448,68 +483,95 @@ def forecast_test_set(arima_results, train_df, val_df, test_df, target_col):
         logging.info("Successfully re-fitted model on train + validation data")
     except Exception as e:
         logging.error(f"Error re-fitting model on train + validation data: {str(e)}")
+        logging.warning("Continuing with original model")
         current_model = arima_results
-        logging.info("Falling back to original model trained on training data only")
     
     update_interval = 168  # Weekly updates (24*7 hours)
     window_size = 168 * 4  # Keep 4 weeks of history for updates
     
-    try:
-        for i in range(len(test_df)):
-            if i % 1000 == 0:
-                logging.info(f"Test forecasting progress: {i}/{len(test_df)} steps")
-                
-            # 1. Forecast next step
-            fc = current_model.get_forecast(steps=1)
-            test_predictions.append(fc.predicted_mean.iloc[0])
+    for i in range(len(test_df)):
+        if i % 1000 == 0:
+            logging.info(f"Test forecasting progress: {i}/{len(test_df)} steps")
             
-            # 2. Store actual value in FIFO buffer
-            buffer.append(test_df[target_col].iloc[i])
-            if len(buffer) > window_size:
-                buffer.pop(0)  # Maintain fixed window size
-                
-            # 3. Update model weekly with most recent data
-            if (i + 1) % update_interval == 0 and len(buffer) >= update_interval:
+        # 1. Forecast next step
+        fc = current_model.get_forecast(steps=1)
+        test_predictions.append(fc.predicted_mean.iloc[0])
+        
+        # 2. Store actual value in FIFO buffer
+        buffer.append(test_df[target_col].iloc[i])
+        if len(buffer) > window_size:
+            buffer.pop(0)  # Maintain fixed window size
+            
+        # 3. Update model weekly with most recent data
+        if (i + 1) % update_interval == 0 and len(buffer) >= update_interval:
+            # Use ONLY the latest update_interval points
+            recent_buffer = buffer[-update_interval:]
+            recent_index = test_df.index[max(0, i+1-update_interval):i+1]
+            
+            # Ensure lengths match exactly
+            if len(recent_buffer) != len(recent_index):
+                if len(recent_buffer) < len(recent_index):
+                    recent_index = recent_index[-len(recent_buffer):]
+                else:
+                    recent_buffer = recent_buffer[-len(recent_index):]
+            
+            # Create Series with matching lengths
+            update_data = pd.Series(recent_buffer, index=recent_index)
+            
+            # Check model supports update
+            if hasattr(current_model, 'update'):
+                logging.info(f"Updating model at test step {i+1}")
                 try:
-                    # Use ONLY the latest update_interval points
-                    update_data = pd.Series(
-                        buffer[-update_interval:],
-                        index=test_df.index[i+1-update_interval:i+1]
-                    )
-                    # Check model supports update
-                    if hasattr(current_model, 'update'):
-                        logging.info(f"Updating model at test step {i+1}")
-                        current_model = current_model.update(update_data)
-                    else:
-                        # Fallback: re-fit model on combined history
-                        logging.info(f"Re-fitting model at test step {i+1}")
-                        # Include validation data in the history
-                        combined_series = pd.concat([
-                            train_df[target_col],
-                            val_df[target_col],
-                            pd.Series(buffer, index=test_df.index[:i+1])
-                        ])
+                    current_model = current_model.update(update_data)
+                except Exception as e:
+                    logging.error(f"Test update failed at step {i}: {str(e)}")
+                    logging.info("Falling back to re-fitting the model")
+                    # Include validation data in the history
+                    combined_series = pd.concat([
+                        train_df[target_col],
+                        val_df[target_col],
+                        update_data
+                    ])
+                    # Ensure no duplicate indices
+                    combined_series = combined_series[~combined_series.index.duplicated(keep='last')]
+                    try:
                         current_model = ARIMA(
                             combined_series,
                             order=current_model.model.order,
                             seasonal_order=current_model.model.seasonal_order
                         ).fit()
+                    except Exception as e2:
+                        logging.error(f"Test re-fit also failed at step {i}: {str(e2)}")
+                        # Continue with the existing model
+            else:
+                # Fallback: re-fit model on combined history
+                logging.info(f"Re-fitting model at test step {i+1}")
+                # Include validation data in the history
+                combined_series = pd.concat([
+                    train_df[target_col],
+                    val_df[target_col],
+                    update_data
+                ])
+                # Ensure no duplicate indices
+                combined_series = combined_series[~combined_series.index.duplicated(keep='last')]
+                try:
+                    current_model = ARIMA(
+                        combined_series,
+                        order=current_model.model.order,
+                        seasonal_order=current_model.model.seasonal_order
+                    ).fit()
                 except Exception as e:
-                    logging.error(f"Test update failed at step {i}: {str(e)[:200]}")
-                    buffer = buffer[-update_interval:]  # Reset buffer
+                    logging.error(f"Test re-fit failed at step {i}: {str(e)}")
+                    # Continue with the existing model
 
-        test_df['ARIMA_pred'] = test_predictions
-        
-        # Calculate test metrics
-        test_rmse = np.sqrt(mean_squared_error(test_df[target_col], test_df['ARIMA_pred']))
-        test_mae = mean_absolute_error(test_df[target_col], test_df['ARIMA_pred'])
-        logging.info(f"Test RMSE: {test_rmse:.2f}, MAE: {test_mae:.2f}")
-        
-        return True
+    test_df['ARIMA_pred'] = test_predictions
     
-    except Exception as e:
-        logging.error(f"Critical error in test forecasting: {str(e)}")
-        return False
+    # Calculate test metrics
+    test_rmse = np.sqrt(mean_squared_error(test_df[target_col], test_df['ARIMA_pred']))
+    test_mae = mean_absolute_error(test_df[target_col], test_df['ARIMA_pred'])
+    logging.info(f"Test RMSE: {test_rmse:.2f}, MAE: {test_mae:.2f}")
+    
+    return True
 
 
 def compute_residuals(train_df, val_df, test_df, target_col):
@@ -561,15 +623,13 @@ def main():
     
     if arima_results is not None:
         # Generate forecasts for validation set
-        val_success = forecast_validation_set(arima_results, train_df, val_df, TARGET)
+        forecast_validation_set(arima_results, train_df, val_df, TARGET)
         
         # Generate forecasts for test set
-        test_success = forecast_test_set(arima_results, train_df, val_df, test_df, TARGET)
-        
-        if not (val_success and test_success):
-            fallback_naive_forecast(train_df, val_df, test_df, TARGET)
+        forecast_test_set(arima_results, train_df, val_df, test_df, TARGET)
     else:
-        fallback_naive_forecast(train_df, val_df, test_df, TARGET)
+        logging.error("ARIMA model fitting failed. Exiting.")
+        return
     
     # Compute residuals
     compute_residuals(train_df, val_df, test_df, TARGET)
