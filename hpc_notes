@@ -1,0 +1,46 @@
+# HPC space
+/data/homezvol2/ddlin/ddlin
+/pub/ddlin/
+
+# Request interactive node
+srun --pty /bin/bash -i 
+srun --pty -p free /bin/bash -i
+srun -A panteater_lab --pty /bin/bash -i
+srun -p free --nodes=1 --ntasks=4 --mem=32G --pty /bin/bash -i
+
+# cp files from server back to laptop, use -r for folder and switch the position for laptop to hpc
+rsync -avzP --bwlimit=10240 ddlin@hpc3.rcic.uci.edu:/dfs6/pub/ddlin/kaiser_lab/nextflow_rnaseq_meikong_lab.tar.gz /mnt/e/UCI
+rsync -avzP --bwlimit=10240 --exclude={'*.bam','*.bam.bai','stringtie','bigwig','*.stat'} ddlin@hpc3.rcic.uci.edu:/pub/ddlin/kaiser_lab/Mei_Kong_Lab_RNAseq_fastq/results/star_rsem /mnt/c/Users/teale/Desktop/UCI/Mei_Kong_Lab_RNAseq_fastq/nextflow_rnaseq_pipeline/
+
+bowtie1 -S –m 1 –k 1
+
+bowtie2 -S --no-discordant --no-mixed -k 1 -q
+
+gdown https://drive.google.com/uc?id=<file_id>  # for files
+gdown <file_id>                                 # alternative format
+gdown --folder https://drive.google.com/drive/folders/<file_id>  # for folders
+gdown --folder --id <file_id>                                   # this format works for folders too
+
+# ask for an interactive session with an access to one GPU in free-gpu partition. DO NOT ask for more than 1 GPU!
+srun -p free-gpu --gres=gpu:V100:1 --pty /bin/bash -i
+# Start a jupyter notebook server with the GPU session, go to vscode and select the kernal with "existing jupyter server"
+jupyter notebook --NotebookApp.allow_origin='*' --NotebookApp.ip='0.0.0.0'
+# paste in the http address like this to connect the notebook in vscode to the jupyter server
+http://hpc3-gpu-18-02:8888/?token=db60d01f2c2920a04451855ef1544f631b001a956ef1f124
+
+# Start an interactive session for GUI jobs. First, a user must login with Xforwarding enabled in ssh,
+# see Reference guide and then use the --x11 to enable Xforwarding in srun command. 
+srun -p free --x11  --pty /bin/bash -i
+
+ll -art| tail -7| awk '{print $9}'| xargs -I{} mv {} trash/
+
+# Check max memory usage
+sacct -j JOBID --format=JobID,MaxRSS,Elapsed,State
+
+# Work in progress
+cd /data/homezvol2/ddlin/code-server-4.99.3-linux-amd64
+./bin/code-server
+ssh -N \                                                                                                                ✘ 255 Py 3.10.12 09:58:51 PM
+  -L 8080:127.0.0.1:8080 \
+  -J ddlin@hpc3.rcic.uci.edu \
+  ddlin@hpc3-22-06
