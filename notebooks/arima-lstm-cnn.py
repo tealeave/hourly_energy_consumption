@@ -366,7 +366,7 @@ def fit_arima_model(train_df, target_col, arima_order, seasonal_order):
         return None
 
 
-def forecast_validation_set(arima_results, train_df, val_df, target_col):
+def forecast_validation_set(arima_results, train_df, val_df, target_col, error_on_fallback=True):
     """Generate forecasts for validation set using rolling window approach"""
     logging.info("Generating rolling forecasts for validation set...")
     val_predictions = []
@@ -414,6 +414,9 @@ def forecast_validation_set(arima_results, train_df, val_df, target_col):
                     current_model = current_model.update(update_data)
                 except Exception as e:
                     logging.error(f"Validation update failed at step {i}: {str(e)}")
+                    if error_on_fallback:
+                        raise RuntimeError(f"Model update failed and error_on_fallback=True: {str(e)}")
+                    
                     # Continue with re-fitting instead of raising an error
                     logging.info("Falling back to re-fitting the model")
                     # Use the last window_size points from training + current buffer
@@ -435,6 +438,9 @@ def forecast_validation_set(arima_results, train_df, val_df, target_col):
                         logging.error(f"Validation re-fit also failed at step {i}: {str(e2)}")
                         # Continue with the existing model
             else:
+                if error_on_fallback:
+                    raise RuntimeError(f"Model does not support update method and error_on_fallback=True")
+
                 # Fallback: re-fit model on combined history
                 logging.info(f"Re-fitting model at validation step {i+1}")
                 # Use the last window_size points from training + current buffer
@@ -466,26 +472,12 @@ def forecast_validation_set(arima_results, train_df, val_df, target_col):
     return True
 
 
-def forecast_test_set(arima_results, train_df, val_df, test_df, target_col):
+def forecast_test_set(arima_results, train_val_df, test_df, target_col, error_on_fallback=True):
     """Generate forecasts for test set using rolling window approach"""
     logging.info("Generating rolling forecasts for test set...")
     test_predictions = []
     buffer = []
-    
-    # Start with model trained on train + validation data
-    try:
-        combined_train_val = pd.concat([train_df[target_col], val_df[target_col]])
-        current_model = ARIMA(
-            combined_train_val,
-            order=arima_results.model.order,
-            seasonal_order=arima_results.model.seasonal_order
-        ).fit()
-        logging.info("Successfully re-fitted model on train + validation data")
-    except Exception as e:
-        logging.error(f"Error re-fitting model on train + validation data: {str(e)}")
-        logging.warning("Continuing with original model")
-        current_model = arima_results
-    
+    current_model = arima_results  # Start with the trained model
     update_interval = 168  # Weekly updates (24*7 hours)
     window_size = 168 * 4  # Keep 4 weeks of history for updates
     
@@ -504,12 +496,15 @@ def forecast_test_set(arima_results, train_df, val_df, test_df, target_col):
             
         # 3. Update model weekly with most recent data
         if (i + 1) % update_interval == 0 and len(buffer) >= update_interval:
-            # Use ONLY the latest update_interval points
+            # Create a proper Series with the correct index
+            # Only use the most recent update_interval points from buffer
             recent_buffer = buffer[-update_interval:]
+            # Get the corresponding indices
             recent_index = test_df.index[max(0, i+1-update_interval):i+1]
             
             # Ensure lengths match exactly
             if len(recent_buffer) != len(recent_index):
+                # Adjust either buffer or index to make lengths match
                 if len(recent_buffer) < len(recent_index):
                     recent_index = recent_index[-len(recent_buffer):]
                 else:
@@ -525,15 +520,20 @@ def forecast_test_set(arima_results, train_df, val_df, test_df, target_col):
                     current_model = current_model.update(update_data)
                 except Exception as e:
                     logging.error(f"Test update failed at step {i}: {str(e)}")
+                    if error_on_fallback:
+                        raise RuntimeError(f"Model update failed and error_on_fallback=True: {str(e)}")
+                    
+                    # Continue with re-fitting instead of raising an error
                     logging.info("Falling back to re-fitting the model")
-                    # Include validation data in the history
-                    combined_series = pd.concat([
-                        train_df[target_col],
-                        val_df[target_col],
-                        update_data
-                    ])
+                    # Use the last window_size points from training + current buffer
+                    train_history = train_val_df[target_col].iloc[-window_size:] if len(train_val_df) > window_size else train_val_df[target_col]
+                    
+                    # Combine with training data
+                    combined_series = pd.concat([train_history, update_data])
+                    
                     # Ensure no duplicate indices
                     combined_series = combined_series[~combined_series.index.duplicated(keep='last')]
+                    
                     try:
                         current_model = ARIMA(
                             combined_series,
@@ -544,16 +544,20 @@ def forecast_test_set(arima_results, train_df, val_df, test_df, target_col):
                         logging.error(f"Test re-fit also failed at step {i}: {str(e2)}")
                         # Continue with the existing model
             else:
+                if error_on_fallback:
+                    raise RuntimeError(f"Model does not support update method and error_on_fallback=True")
+
                 # Fallback: re-fit model on combined history
                 logging.info(f"Re-fitting model at test step {i+1}")
-                # Include validation data in the history
-                combined_series = pd.concat([
-                    train_df[target_col],
-                    val_df[target_col],
-                    update_data
-                ])
+                # Use the last window_size points from training + current buffer
+                train_history = train_val_df[target_col].iloc[-window_size:] if len(train_val_df) > window_size else train_val_df[target_col]
+                
+                # Combine with training data
+                combined_series = pd.concat([train_history, update_data])
+                
                 # Ensure no duplicate indices
                 combined_series = combined_series[~combined_series.index.duplicated(keep='last')]
+                
                 try:
                     current_model = ARIMA(
                         combined_series,
@@ -597,12 +601,31 @@ def fallback_naive_forecast(train_df, val_df, test_df, target_col):
             logging.info(f"{df_name} naive forecast - RMSE: {rmse:.2f}, MAE: {mae:.2f}")
 
 
-def main():
-    """Main function to run the ARIMA modeling pipeline"""
+def main(use_sample=False, sample_fraction=0.01, error_on_fallback=True):
+    """Main function to run the ARIMA modeling pipeline
+    
+    Parameters:
+    -----------
+    use_sample : bool, default=False
+        Whether to use a sample of the data for prototyping
+    sample_fraction : float, default=0.01
+        Fraction of data to use if use_sample=True (1/100 by default)
+    error_on_fallback : bool, default=True
+        Whether to raise an error when model update fails instead of falling back to re-fitting
+    """
     logging.info("Starting ARIMA modeling pipeline")
+    logging.info(f"Settings: use_sample={use_sample}, sample_fraction={sample_fraction}, error_on_fallback={error_on_fallback}")
     
     # Load and preprocess data
     pjme_weather = load_and_preprocess_data()
+    
+    # Use a sample of the data for prototyping if requested
+    if use_sample:
+        logging.info(f"Using {sample_fraction*100:.2f}% of data for prototyping")
+        # Ensure we keep the time series structure by taking every Nth point
+        sample_step = int(1/sample_fraction)
+        pjme_weather = pjme_weather.iloc[::sample_step].copy()
+        logging.info(f"Sampled data shape: {pjme_weather.shape}")
     
     # Split data
     TARGET = 'PJME_MW'
@@ -623,31 +646,42 @@ def main():
     
     if arima_results is not None:
         # Generate forecasts for validation set
-        forecast_validation_set(arima_results, train_df, val_df, TARGET)
-        
-        # Generate forecasts for test set
-        forecast_test_set(arima_results, train_df, val_df, test_df, TARGET)
+        try:
+            forecast_validation_set(arima_results, train_df, val_df, TARGET, error_on_fallback=error_on_fallback)
+            
+            # Combine train and validation for test forecasting
+            train_val_df = pd.concat([train_df, val_df])
+            
+            # Generate forecasts for test set
+            forecast_test_set(arima_results, train_val_df, test_df, TARGET, error_on_fallback=error_on_fallback)
+            
+            # Compute residuals
+            compute_residuals(train_df, val_df, test_df, TARGET)
+            
+            # Create diagnostic plots
+            create_diagnostic_plots(train_df, val_df, test_df, TARGET)
+            
+            # Save results
+            logging.info("Saving results...")
+            results_dir = '../results'
+            os.makedirs(results_dir, exist_ok=True)
+            train_df.to_csv(os.path.join(results_dir, 'train_with_predictions.csv'))
+            val_df.to_csv(os.path.join(results_dir, 'val_with_predictions.csv'))
+            test_df.to_csv(os.path.join(results_dir, 'test_with_predictions.csv'))
+            
+        except Exception as e:
+            logging.error(f"Forecasting failed with error: {str(e)}")
+            logging.info("Falling back to naive forecast for comparison")
+            fallback_naive_forecast(train_df, val_df, test_df, TARGET)
     else:
-        logging.error("ARIMA model fitting failed. Exiting.")
-        return
-    
-    # Compute residuals
-    compute_residuals(train_df, val_df, test_df, TARGET)
-    
-    # Create diagnostic plots
-    create_diagnostic_plots(train_df, val_df, test_df, TARGET)
-    
-    # Save results
-    logging.info("Saving results...")
-    results_dir = '../results'
-    os.makedirs(results_dir, exist_ok=True)
-    train_df.to_csv(os.path.join(results_dir, 'train_with_predictions.csv'))
-    val_df.to_csv(os.path.join(results_dir, 'val_with_predictions.csv'))
-    test_df.to_csv(os.path.join(results_dir, 'test_with_predictions.csv'))
+        logging.error("ARIMA model fitting failed. Using naive forecast instead.")
+        fallback_naive_forecast(train_df, val_df, test_df, TARGET)
     
     logging.info("ARIMA modeling pipeline completed")
 
 
 if __name__ == "__main__":
-    main()
+    # For prototyping, use a small sample of the data and make the function error out
+    # when model update fails instead of falling back to re-fitting
+    main(use_sample=True, sample_fraction=0.01, error_on_fallback=True)
 
