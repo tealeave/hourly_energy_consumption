@@ -1174,6 +1174,15 @@ class TimeSeriesDataset(Dataset):
         # Shape: [PredLen, NumFeatures] (matching x_enc's feature dimension)
         x_dec = np.zeros((self.prediction_length, len(self.feature_cols)), dtype=np.float32)
 
+                # --- Get Prediction Window Start Timestamp ---
+        # <<< Modification Start >>>
+        try:
+            pred_start_time = self.index[pred_start] # Get the timestamp for the first point in the target window
+        except IndexError:
+             # Handle edge case where pred_start might be out of bounds if dataset is very small
+             logger.error(f"IndexError getting pred_start_time at index {pred_start} for sample index {idx}.")
+             # Assign a dummy value or raise error - let's assign NaT
+             pred_start_time = pd.NaT
 
         # --- Apply per-sample instance normalization if requested ---
         # Note: This is generally *not* recommended if the model performs its own normalization.
@@ -1198,7 +1207,10 @@ class TimeSeriesDataset(Dataset):
             'x_mark_enc': torch.from_numpy(x_mark_enc),
             'x_dec': torch.from_numpy(x_dec),
             'x_mark_dec': torch.from_numpy(x_mark_dec),
-            'y': torch.from_numpy(y) # Target values
+            'y': torch.from_numpy(y),
+            # <<< Modification Start >>>
+            'pred_start_time': pred_start_time # Add timestamp to the batch dictionary
+            # <<< Modification End >>>
         }
         return sample
 
@@ -1783,8 +1795,9 @@ def train_model(model: nn.Module, train_loader: DataLoader, val_loader: DataLoad
 # === Evaluation Function ===
 
 def evaluate_model(model: nn.Module, test_loader: DataLoader, criterion: nn.Module,
-                   target_scaler: StandardScaler, target_cols: list[str],
-                   device: torch.device, output_dir: Path, prefix: str = "final") -> dict:
+                    target_scaler: StandardScaler, target_cols: list[str],
+                    pred_len: int,
+                    device: torch.device, output_dir: Path, prefix: str = "final") -> dict:
     """
     Evaluates the trained model on the test set, calculates metrics,
     and generates diagnostic plots.
@@ -1808,6 +1821,7 @@ def evaluate_model(model: nn.Module, test_loader: DataLoader, criterion: nn.Modu
 
     all_predictions = []
     all_actuals = []
+    all_pred_start_times = [] # List to collect starting timestamps of prediction windows
     test_loss = 0.0
     test_batch_count = 0
 
@@ -1819,6 +1833,8 @@ def evaluate_model(model: nn.Module, test_loader: DataLoader, criterion: nn.Modu
                 x_dec = batch['x_dec'].to(device)
                 x_mark_dec = batch['x_mark_dec'].to(device)
                 y_true = batch['y'].to(device) # Scaled actuals [B, PredLen, NumTargets]
+                # Get timestamps from the batch (these are pd.Timestamp objects)
+                pred_start_times_batch = batch['pred_start_time']
 
                 outputs = model(x_enc, x_mark_enc, x_dec, x_mark_dec) # Scaled predictions [B, PredLen, NumTargets]
 
@@ -1843,9 +1859,20 @@ def evaluate_model(model: nn.Module, test_loader: DataLoader, criterion: nn.Modu
                 all_predictions.append(preds_inv)
                 all_actuals.append(actuals_inv)
 
+                # Store timestamps, ensuring alignment with batch size (in case last batch is smaller)
+                # Assumes timestamps correspond to the start of the window for each item in the batch
+                # The number of items processed in this batch is outputs.shape[0]
+                current_batch_size = outputs.shape[0]
+                # Need to handle pd.NaT if it occurred in dataset creation
+                valid_timestamps = [ts for ts in pred_start_times_batch[:current_batch_size] if pd.notna(ts)]
+                all_pred_start_times.extend(valid_timestamps)
+
+            except KeyError as e:
+                 logger.error(f"Missing key '{e}' in evaluation batch {i}. Skipping batch.")
+                 continue # Skip batch if timestamp or other key is missing
             except Exception as e:
                  logger.error(f"Error during evaluation batch {i}: {e}", exc_info=True)
-                 continue # Skip batch on error
+                 continue
 
     if test_batch_count == 0:
         logger.error("No batches processed during evaluation. Cannot calculate metrics.")
@@ -1855,6 +1882,55 @@ def evaluate_model(model: nn.Module, test_loader: DataLoader, criterion: nn.Modu
     predictions_np = np.concatenate(all_predictions, axis=0)
     actuals_np = np.concatenate(all_actuals, axis=0)
     avg_test_loss = test_loss / test_batch_count
+
+    # --- Reconstruct the full prediction index ---
+    full_prediction_index = None
+    logger.info("Reconstructing prediction timestamp index...")
+    if all_pred_start_times:
+        # Infer frequency from the first few timestamps
+        # Use pd.infer_freq on the Timestamps directly
+        time_freq = pd.infer_freq(pd.Series(all_pred_start_times[:min(len(all_pred_start_times), 10)]))
+        if time_freq is None:
+             logger.warning("Could not infer frequency from prediction start times. Assuming hourly ('H').")
+             time_freq = 'H' # Default to hourly if inference fails
+        else:
+             logger.info(f"Inferred prediction frequency: {time_freq}")
+
+        # Check consistency: Total predictions should equal num_windows * pred_len
+        num_windows = len(all_pred_start_times)
+        expected_predictions = num_windows * pred_len
+        actual_predictions = len(predictions_np)
+
+        if expected_predictions != actual_predictions:
+            logger.error(f"Prediction count mismatch: Expected {expected_predictions} ({num_windows} windows * {pred_len} steps/window), "
+                         f"but found {actual_predictions} total prediction steps. Cannot reliably reconstruct index.")
+        else:
+            reconstructed_index_list = []
+            for start_time in all_pred_start_times:
+                # Generate DatetimeIndex for the prediction window [start_time, start_time + pred_len steps)
+                try:
+                    # Note: freq=time_freq might need adjustment based on how date_range interprets it (e.g., 'H' vs 'h')
+                    # Using offset aliases generally works well.
+                    window_index = pd.date_range(start=start_time, periods=pred_len, freq=time_freq)
+                    reconstructed_index_list.extend(window_index)
+                except Exception as e:
+                     logger.error(f"Error generating date range for start_time {start_time} with freq {time_freq}: {e}")
+                     reconstructed_index_list = None # Mark as failed
+                     break
+
+            if reconstructed_index_list:
+                full_prediction_index = pd.DatetimeIndex(reconstructed_index_list)
+                logger.info(f"Reconstructed prediction index from {full_prediction_index.min()} to {full_prediction_index.max()} "
+                            f"with {len(full_prediction_index)} entries.")
+                # Final length check
+                if len(full_prediction_index) != len(predictions_np):
+                    logger.error(f"Length mismatch after reconstructing index ({len(full_prediction_index)}) and predictions ({len(predictions_np)}).")
+                    full_prediction_index = None # Mark as invalid
+    else:
+        logger.warning("No valid prediction start times collected. Cannot reconstruct index.")
+
+
+
 
     logger.info(f"Evaluation completed. Average Test Loss (scaled): {avg_test_loss:.6f}")
     logger.info(f"Shape of inverse-scaled predictions array: {predictions_np.shape}")
@@ -1977,10 +2053,10 @@ def evaluate_model(model: nn.Module, test_loader: DataLoader, criterion: nn.Modu
         logger.error(f"Error saving metrics to {metrics_path}: {e}", exc_info=True)
 
 
-    # Store predictions and actuals for potential later plotting
-    # Be mindful of memory if the test set is very large
-    metrics['predictions'] = predictions_np.tolist() # Convert to list for JSON potentially
+    # Store predictions, actuals, and the reconstructed index object
+    metrics['predictions'] = predictions_np.tolist() # Convert for JSON compatibility
     metrics['actuals'] = actuals_np.tolist()
+    metrics['prediction_index_obj'] = full_prediction_index # Keep actual DatetimeIndex object
 
     return metrics
 
@@ -2656,11 +2732,16 @@ def main():
             criterion=evaluation_criterion,
             target_scaler=target_scaler, # Pass the loaded/saved target scaler
             target_cols=target_cols_list,
+            pred_len=final_configs.pred_len, # Pass pred_len here
             device=DEVICE,
             output_dir=output_dir,
             prefix="final" # Indicate this is the final evaluation
         )
-        logger.info(f"Final evaluation metrics: {eval_results}")
+        logger.info(f"Final evaluation results summary: "
+                    f"RMSE={eval_results.get(f'{args.target_col}_RMSE', 'N/A'):.4f}, "
+                    f"MAE={eval_results.get(f'{args.target_col}_MAE', 'N/A'):.4f}, "
+                    f"MAPE={eval_results.get(f'{args.target_col}_MAPE', 'N/A'):.2f}%, "
+                    f"TestLoss={eval_results.get('final_Test_Loss_Scaled', 'N/A'):.6f}")
     except Exception as e:
         logger.error(f"Error during final model evaluation: {e}", exc_info=True)
         return
@@ -2668,55 +2749,42 @@ def main():
 
     # --- 10. Plot Final Forecasts ---
     try:
-        # Reconstruct DataFrame with predictions and actuals for plotting
-        # Need the timestamps corresponding to the test predictions
-        num_predictions = len(eval_results.get('predictions', []))
-        if num_predictions > 0:
-            # Calculate the starting index of test predictions in the original df
-            test_start_offset = len(train_df) + len(val_df)
-            # The first prediction corresponds to the target starting after the *first* test sequence
-            # test_pred_start_idx = test_start_offset + final_configs.seq_len # This is the start of the first *target* sequence
+    # Get data directly from the eval_results dictionary
+        predictions_list = eval_results.get('predictions')
+        actuals_list = eval_results.get('actuals')
+        # Get the reconstructed DatetimeIndex object
+        prediction_index = eval_results.get('prediction_index_obj')
 
-            # Simpler approach: Get the index from the test_df used for the test_loader
-            # The test loader produces `len(test_dataset)` samples.
-            # `len(test_dataset) = len(test_df) - seq_len - pred_len + 1` batches * batch_size predictions? No.
-            # Total predictions = `len(test_dataset)` * `pred_len` if batch=1.
-            # Let's assume predictions cover the test set chronologically, starting after the first seq_len.
-            # The `evaluate_model` concatenated all predictions.
+        if predictions_list and actuals_list and isinstance(prediction_index, pd.DatetimeIndex):
+            # Convert lists back to numpy arrays if needed for slicing etc.
+            predictions_plot = np.array(predictions_list)
+            actuals_plot = np.array(actuals_list)
 
-            test_set_index = test_df.index
-            # We need the index for the *target* periods.
-            # The first target period starts at index `seq_len` into the test_df.
-            # The last target period starts at index `len(test_df) - pred_len`.
-            # Total number of prediction *steps* = num_predictions.
+            # Check length consistency one last time before creating DataFrame
+            if len(prediction_index) == len(predictions_plot):
+                logger.info(f"Creating results DataFrame for plotting with index length {len(prediction_index)}")
+                results_plot_df = pd.DataFrame({
+                    # Assuming single target for plot (index 0)
+                    'Actual': actuals_plot[:, 0],
+                    'Predicted': predictions_plot[:, 0]
+                }, index=prediction_index) # Use the reconstructed index
 
-            # Check consistency: total steps = len(test_loader) * batch_size * pred_len? Not quite if last batch smaller.
-            # Use the length of concatenated predictions.
-
-            # Determine the end point in the original index
-            # This calculation can be tricky. Let's use the test_df index directly for simplicity,
-            # assuming the predictions correspond sequentially to windows within test_df.
-            # The predictions cover target points from test_df[seq_len:] onwards.
-            if num_predictions <= len(test_set_index[final_configs.seq_len:]):
-                 plot_index = test_set_index[final_configs.seq_len : final_configs.seq_len + num_predictions]
-
-                 results_plot_df = pd.DataFrame({
-                    'Actual': eval_results['actuals'][:, 0], # Assuming single target plot
-                    'Predicted': eval_results['predictions'][:, 0] # Assuming single target plot
-                 }, index=plot_index)
-
-                 plot_forecasts(
-                     results_df=results_plot_df,
-                     target_col=args.target_col,
-                     output_dir=output_dir,
-                     prefix="final"
-                     # sample_size=... # Adjust sample size if needed
-                 )
+                plot_forecasts(
+                    results_df=results_plot_df,
+                    target_col=args.target_col,
+                    output_dir=output_dir,
+                    prefix="final"
+                    # sample_size can be adjusted via args if needed
+                )
             else:
-                 logger.warning(f"Number of predictions ({num_predictions}) seems inconsistent with test set index length. Skipping forecast plot.")
+                # This log should now be less likely if index reconstruction is correct
+                logger.warning(f"Length mismatch between reconstructed index ({len(prediction_index)}) "
+                               f"and predictions ({len(predictions_plot)}). Skipping forecast plot.")
 
+        elif not isinstance(prediction_index, pd.DatetimeIndex):
+             logger.warning(f"Reconstructed prediction index is invalid or missing (type: {type(prediction_index)}). Skipping forecast plot.")
         else:
-             logger.warning("No evaluation results found to plot forecasts.")
+             logger.warning("No evaluation results (predictions/actuals) found in dictionary to plot forecasts.")
 
     except Exception as e:
         logger.error(f"Error during forecast plotting: {e}", exc_info=True)
