@@ -19,6 +19,7 @@ prophet = "^1.1.6"
 meteostat = "^1.6.8"
 statsmodels = "^0.14.4"
 torch = "^2.7.0"
+optuna = "^4.3.0"
 
 [tool.poetry.group.dev.dependencies]
 jupyter = "^1.1.1"

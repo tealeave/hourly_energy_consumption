@@ -372,11 +372,21 @@ def forecast_validation_set(arima_results, train_df, val_df, target_col, error_o
     val_predictions = []
     buffer = []
     current_model = arima_results  # Start with the trained model
-    update_interval = 168  # Weekly updates (24*7 hours)
-    window_size = 168 * 4  # Keep 4 weeks of history for updates
+    
+    # Determine appropriate update interval based on data density
+    # For sparse data (sampled), use a smaller update interval
+    if len(val_df) < 200:  # If we're using a small sample
+        update_interval = max(1, min(24, len(val_df) // 10))  # Update at least once, at most every 24 points
+        logging.info(f"Using reduced update interval of {update_interval} for sparse validation data")
+    else:
+        update_interval = 168  # Weekly updates (24*7 hours) for full data
+    
+    window_size = max(update_interval * 4, 24)  # Keep at least 4 update intervals of history
+    
+    logging.info(f"Validation forecast settings: update_interval={update_interval}, window_size={window_size}")
     
     for i in range(len(val_df)):
-        if i % 1000 == 0:
+        if i % max(1, len(val_df) // 10) == 0:
             logging.info(f"Validation forecasting progress: {i}/{len(val_df)} steps")
             
         # 1. Forecast next step
@@ -388,79 +398,54 @@ def forecast_validation_set(arima_results, train_df, val_df, target_col, error_o
         if len(buffer) > window_size:
             buffer.pop(0)  # Maintain fixed window size
             
-        # 3. Update model weekly with most recent data
+        # 3. Update model periodically with most recent data
         if (i + 1) % update_interval == 0 and len(buffer) >= update_interval:
-            # Create a proper Series with the correct index
-            # Only use the most recent update_interval points from buffer
-            recent_buffer = buffer[-update_interval:]
-            # Get the corresponding indices
-            recent_index = val_df.index[max(0, i+1-update_interval):i+1]
+            # Revert to re-fitting the model with combined historical and new data
+            logging.info(f"Attempting model re-fit at validation step {i+1}")
             
-            # Ensure lengths match exactly
-            if len(recent_buffer) != len(recent_index):
-                # Adjust either buffer or index to make lengths match
-                if len(recent_buffer) < len(recent_index):
-                    recent_index = recent_index[-len(recent_buffer):]
-                else:
-                    recent_buffer = recent_buffer[-len(recent_index):]
-            
-            # Create Series with matching lengths
-            update_data = pd.Series(recent_buffer, index=recent_index)
-            
-            # Check model supports update
-            if hasattr(current_model, 'update'):
-                logging.info(f"Updating model at validation step {i+1}")
-                try:
-                    current_model = current_model.update(update_data)
-                except Exception as e:
-                    logging.error(f"Validation update failed at step {i}: {str(e)}")
-                    if error_on_fallback:
-                        raise RuntimeError(f"Model update failed and error_on_fallback=True: {str(e)}")
-                    
-                    # Continue with re-fitting instead of raising an error
-                    logging.info("Falling back to re-fitting the model")
-                    # Use the last window_size points from training + current buffer
-                    train_history = train_df[target_col].iloc[-window_size:] if len(train_df) > window_size else train_df[target_col]
-                    
-                    # Combine with training data
-                    combined_series = pd.concat([train_history, update_data])
-                    
-                    # Ensure no duplicate indices
-                    combined_series = combined_series[~combined_series.index.duplicated(keep='last')]
-                    
-                    try:
-                        current_model = ARIMA(
-                            combined_series,
-                            order=current_model.model.order,
-                            seasonal_order=current_model.model.seasonal_order
-                        ).fit()
-                    except Exception as e2:
-                        logging.error(f"Validation re-fit also failed at step {i}: {str(e2)}")
-                        # Continue with the existing model
-            else:
-                if error_on_fallback:
-                    raise RuntimeError(f"Model does not support update method and error_on_fallback=True")
+            try:
+                # Get the most recent chunk of actual data observed
+                recent_buffer = buffer[-update_interval:]
+                recent_index = val_df.index[max(0, i+1-update_interval):i+1]
+                
+                # Ensure lengths match exactly
+                if len(recent_buffer) != len(recent_index):
+                    min_len = min(len(recent_buffer), len(recent_index))
+                    recent_buffer = recent_buffer[-min_len:]
+                    recent_index = recent_index[-min_len:]
+                
+                update_data = pd.Series(recent_buffer, index=recent_index)
 
-                # Fallback: re-fit model on combined history
-                logging.info(f"Re-fitting model at validation step {i+1}")
-                # Use the last window_size points from training + current buffer
-                train_history = train_df[target_col].iloc[-window_size:] if len(train_df) > window_size else train_df[target_col]
+                # Combine original training data with all validation data up to this point
+                # This ensures a contiguous index for re-fitting
+                combined_series = pd.concat([train_df[target_col], val_df[target_col].iloc[:i+1]])
                 
-                # Combine with training data
-                combined_series = pd.concat([train_history, update_data])
-                
-                # Ensure no duplicate indices
+                # Ensure no duplicate indices (preferring the latest data)
                 combined_series = combined_series[~combined_series.index.duplicated(keep='last')]
                 
+                # Re-fit the model
                 try:
+                    # Get the original model orders
+                    model_order = arima_results.model.order
+                    seasonal_order = arima_results.model.seasonal_order
+                    
                     current_model = ARIMA(
                         combined_series,
-                        order=current_model.model.order,
-                        seasonal_order=current_model.model.seasonal_order
+                        order=model_order,
+                        seasonal_order=seasonal_order
                     ).fit()
+                    logging.info(f"Model re-fit successful at validation step {i+1}")
                 except Exception as e:
-                    logging.error(f"Validation re-fit failed at step {i}: {str(e)}")
-                    # Continue with the existing model
+                    logging.error(f"Validation model re-fit failed at step {i}: {str(e)}")
+                    if error_on_fallback:
+                        raise RuntimeError(f"Model re-fit failed and error_on_fallback=True: {str(e)}")
+                    else:
+                        logging.warning(f"Continuing with the model from step {i+1-update_interval} due to re-fit failure.")
+                        # Continue with the existing model if fallback is allowed
+            
+            except Exception as e:
+                logging.error(f"Unexpected error during model update preparation at step {i}: {str(e)}")
+                # Continue with the existing model if an error occurs during data prep
 
     val_df['ARIMA_pred'] = val_predictions
     
@@ -478,11 +463,21 @@ def forecast_test_set(arima_results, train_val_df, test_df, target_col, error_on
     test_predictions = []
     buffer = []
     current_model = arima_results  # Start with the trained model
-    update_interval = 168  # Weekly updates (24*7 hours)
-    window_size = 168 * 4  # Keep 4 weeks of history for updates
+    
+    # Determine appropriate update interval based on data density
+    # For sparse data (sampled), use a smaller update interval
+    if len(test_df) < 200:  # If we're using a small sample
+        update_interval = max(1, min(24, len(test_df) // 10))  # Update at least once, at most every 24 points
+        logging.info(f"Using reduced update interval of {update_interval} for sparse test data")
+    else:
+        update_interval = 168  # Weekly updates (24*7 hours) for full data
+    
+    window_size = max(update_interval * 4, 24)  # Keep at least 4 update intervals of history
+    
+    logging.info(f"Test forecast settings: update_interval={update_interval}, window_size={window_size}")
     
     for i in range(len(test_df)):
-        if i % 1000 == 0:
+        if i % max(1, len(test_df) // 10) == 0:
             logging.info(f"Test forecasting progress: {i}/{len(test_df)} steps")
             
         # 1. Forecast next step
@@ -494,79 +489,42 @@ def forecast_test_set(arima_results, train_val_df, test_df, target_col, error_on
         if len(buffer) > window_size:
             buffer.pop(0)  # Maintain fixed window size
             
-        # 3. Update model weekly with most recent data
+        # 3. Update model periodically with most recent data
         if (i + 1) % update_interval == 0 and len(buffer) >= update_interval:
-            # Create a proper Series with the correct index
-            # Only use the most recent update_interval points from buffer
-            recent_buffer = buffer[-update_interval:]
-            # Get the corresponding indices
-            recent_index = test_df.index[max(0, i+1-update_interval):i+1]
+            # Revert to re-fitting the model with combined historical and new data
+            logging.info(f"Attempting model re-fit at test step {i+1}")
             
-            # Ensure lengths match exactly
-            if len(recent_buffer) != len(recent_index):
-                # Adjust either buffer or index to make lengths match
-                if len(recent_buffer) < len(recent_index):
-                    recent_index = recent_index[-len(recent_buffer):]
-                else:
-                    recent_buffer = recent_buffer[-len(recent_index):]
-            
-            # Create Series with matching lengths
-            update_data = pd.Series(recent_buffer, index=recent_index)
-            
-            # Check model supports update
-            if hasattr(current_model, 'update'):
-                logging.info(f"Updating model at test step {i+1}")
-                try:
-                    current_model = current_model.update(update_data)
-                except Exception as e:
-                    logging.error(f"Test update failed at step {i}: {str(e)}")
-                    if error_on_fallback:
-                        raise RuntimeError(f"Model update failed and error_on_fallback=True: {str(e)}")
-                    
-                    # Continue with re-fitting instead of raising an error
-                    logging.info("Falling back to re-fitting the model")
-                    # Use the last window_size points from training + current buffer
-                    train_history = train_val_df[target_col].iloc[-window_size:] if len(train_val_df) > window_size else train_val_df[target_col]
-                    
-                    # Combine with training data
-                    combined_series = pd.concat([train_history, update_data])
-                    
-                    # Ensure no duplicate indices
-                    combined_series = combined_series[~combined_series.index.duplicated(keep='last')]
-                    
-                    try:
-                        current_model = ARIMA(
-                            combined_series,
-                            order=current_model.model.order,
-                            seasonal_order=current_model.model.seasonal_order
-                        ).fit()
-                    except Exception as e2:
-                        logging.error(f"Test re-fit also failed at step {i}: {str(e2)}")
-                        # Continue with the existing model
-            else:
-                if error_on_fallback:
-                    raise RuntimeError(f"Model does not support update method and error_on_fallback=True")
-
-                # Fallback: re-fit model on combined history
-                logging.info(f"Re-fitting model at test step {i+1}")
-                # Use the last window_size points from training + current buffer
-                train_history = train_val_df[target_col].iloc[-window_size:] if len(train_val_df) > window_size else train_val_df[target_col]
+            try:
+                # Combine original train+validation data with all test data up to this point
+                # This ensures a contiguous index for re-fitting
+                combined_series = pd.concat([train_val_df[target_col], test_df[target_col].iloc[:i+1]])
                 
-                # Combine with training data
-                combined_series = pd.concat([train_history, update_data])
-                
-                # Ensure no duplicate indices
+                # Ensure no duplicate indices (preferring the latest data)
                 combined_series = combined_series[~combined_series.index.duplicated(keep='last')]
                 
+                # Re-fit the model
                 try:
+                    # Get the original model orders
+                    model_order = arima_results.model.order
+                    seasonal_order = arima_results.model.seasonal_order
+                    
                     current_model = ARIMA(
                         combined_series,
-                        order=current_model.model.order,
-                        seasonal_order=current_model.model.seasonal_order
+                        order=model_order,
+                        seasonal_order=seasonal_order
                     ).fit()
+                    logging.info(f"Model re-fit successful at test step {i+1}")
                 except Exception as e:
-                    logging.error(f"Test re-fit failed at step {i}: {str(e)}")
-                    # Continue with the existing model
+                    logging.error(f"Test model re-fit failed at step {i}: {str(e)}")
+                    if error_on_fallback:
+                        raise RuntimeError(f"Model re-fit failed and error_on_fallback=True: {str(e)}")
+                    else:
+                        logging.warning(f"Continuing with the model from step {i+1-update_interval} due to re-fit failure.")
+                        # Continue with the existing model if fallback is allowed
+            
+            except Exception as e:
+                logging.error(f"Unexpected error during model update preparation at step {i}: {str(e)}")
+                # Continue with the existing model if an error occurs during data prep
 
     test_df['ARIMA_pred'] = test_predictions
     
@@ -601,7 +559,7 @@ def fallback_naive_forecast(train_df, val_df, test_df, target_col):
             logging.info(f"{df_name} naive forecast - RMSE: {rmse:.2f}, MAE: {mae:.2f}")
 
 
-def main(use_sample=False, sample_fraction=0.01, error_on_fallback=True):
+def main(use_sample=False, sample_fraction=0.01, error_on_fallback=True, sample_method='window'):
     """Main function to run the ARIMA modeling pipeline
     
     Parameters:
@@ -612,9 +570,13 @@ def main(use_sample=False, sample_fraction=0.01, error_on_fallback=True):
         Fraction of data to use if use_sample=True (1/100 by default)
     error_on_fallback : bool, default=True
         Whether to raise an error when model update fails instead of falling back to re-fitting
+    sample_method : str, default='window'
+        Method to use for sampling: 'window' for a contiguous time window, 
+        'resample' for lower frequency resampling
     """
     logging.info("Starting ARIMA modeling pipeline")
-    logging.info(f"Settings: use_sample={use_sample}, sample_fraction={sample_fraction}, error_on_fallback={error_on_fallback}")
+    logging.info(f"Settings: use_sample={use_sample}, sample_fraction={sample_fraction}, "
+                f"error_on_fallback={error_on_fallback}, sample_method={sample_method}")
     
     # Load and preprocess data
     pjme_weather = load_and_preprocess_data()
@@ -622,10 +584,60 @@ def main(use_sample=False, sample_fraction=0.01, error_on_fallback=True):
     # Use a sample of the data for prototyping if requested
     if use_sample:
         logging.info(f"Using {sample_fraction*100:.2f}% of data for prototyping")
-        # Ensure we keep the time series structure by taking every Nth point
-        sample_step = int(1/sample_fraction)
-        pjme_weather = pjme_weather.iloc[::sample_step].copy()
-        logging.info(f"Sampled data shape: {pjme_weather.shape}")
+        
+        if sample_method == 'window':
+            # Use a contiguous time window to preserve hourly granularity
+            total_days = (pjme_weather.index[-1] - pjme_weather.index[0]).days
+            window_days = int(total_days * sample_fraction)
+            # Ensure we have at least 30 days of data (or the entire dataset if smaller)
+            window_days = max(30, min(window_days, total_days))
+            
+            # Select a window from the middle of the dataset for more representative data
+            middle_idx = len(pjme_weather) // 2
+            start_idx = middle_idx - (window_days * 24) // 2
+            end_idx = start_idx + (window_days * 24)
+            
+            # Ensure indices are within bounds
+            start_idx = max(0, start_idx)
+            end_idx = min(len(pjme_weather), end_idx)
+            
+            pjme_weather = pjme_weather.iloc[start_idx:end_idx].copy()
+            logging.info(f"Using contiguous window of {window_days} days "
+                        f"({pjme_weather.index[0]} to {pjme_weather.index[-1]})")
+            
+        elif sample_method == 'resample':
+            # Determine appropriate resampling frequency based on sample_fraction
+            if sample_fraction <= 0.01:
+                # For 1% or less, use daily averages (24x reduction)
+                resample_freq = '24H'
+                seasonal_adjustment = 1  # Adjust seasonal period from 24 to 1
+            elif sample_fraction <= 0.05:
+                # For 5% or less, use 6-hourly averages (6x reduction)
+                resample_freq = '6H'
+                seasonal_adjustment = 4  # Adjust seasonal period from 24 to 4
+            elif sample_fraction <= 0.1:
+                # For 10% or less, use 3-hourly averages (3x reduction)
+                resample_freq = '3H'
+                seasonal_adjustment = 8  # Adjust seasonal period from 24 to 8
+            else:
+                # For larger samples, use 2-hourly averages (2x reduction)
+                resample_freq = '2H'
+                seasonal_adjustment = 12  # Adjust seasonal period from 24 to 12
+            
+            # Resample the data to lower frequency
+            pjme_weather = pjme_weather.resample(resample_freq).mean()
+            
+            # Ensure the frequency is properly set
+            pjme_weather = pjme_weather.asfreq(resample_freq)
+            
+            logging.info(f"Resampled data to {resample_freq} frequency, shape: {pjme_weather.shape}")
+            logging.info(f"Seasonal adjustment factor: {seasonal_adjustment} (adjust seasonal_order accordingly)")
+        else:
+            # Original method (not recommended) - taking every Nth point
+            logging.warning("Using original sampling method which breaks time series frequency")
+            sample_step = int(1/sample_fraction)
+            pjme_weather = pjme_weather.iloc[::sample_step].copy()
+            logging.info(f"Sampled data shape: {pjme_weather.shape}")
     
     # Split data
     TARGET = 'PJME_MW'
@@ -639,7 +651,26 @@ def main(use_sample=False, sample_fraction=0.01, error_on_fallback=True):
     
     # Define ARIMA orders based on analysis
     arima_order = (2, 0, 1)
-    seasonal_order = (1, 0, 0, 24)  # daily seasonality
+    
+    # Adjust seasonal order if we've resampled the data
+    if use_sample and sample_method == 'resample':
+        # Get the original seasonal period
+        original_seasonal_period = 24  # daily seasonality
+        
+        # Calculate the new seasonal period based on resampling
+        if sample_fraction <= 0.01:
+            new_seasonal_period = 1  # Daily data, so period is 1 day
+        elif sample_fraction <= 0.05:
+            new_seasonal_period = 4  # 6-hourly data, so period is 4 per day
+        elif sample_fraction <= 0.1:
+            new_seasonal_period = 8  # 3-hourly data, so period is 8 per day
+        else:
+            new_seasonal_period = 12  # 2-hourly data, so period is 12 per day
+        
+        seasonal_order = (1, 0, 0, new_seasonal_period)
+        logging.info(f"Adjusted seasonal period from {original_seasonal_period} to {new_seasonal_period} due to resampling")
+    else:
+        seasonal_order = (1, 0, 0, 24)  # daily seasonality
     
     # Fit ARIMA model
     arima_results = fit_arima_model(train_df, TARGET, arima_order, seasonal_order)
@@ -683,5 +714,5 @@ def main(use_sample=False, sample_fraction=0.01, error_on_fallback=True):
 if __name__ == "__main__":
     # For prototyping, use a small sample of the data and make the function error out
     # when model update fails instead of falling back to re-fitting
-    main(use_sample=True, sample_fraction=0.01, error_on_fallback=True)
+    main(use_sample=True, sample_fraction=0.1, error_on_fallback=True, sample_method='window')
 
