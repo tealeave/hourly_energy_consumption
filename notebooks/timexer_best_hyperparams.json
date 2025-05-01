@@ -1,0 +1,6 @@
+{
+    "learning_rate": 7.944348310121449e-05,
+    "d_model": 128,
+    "seq_len": 168,
+    "patch_len": 12
+}

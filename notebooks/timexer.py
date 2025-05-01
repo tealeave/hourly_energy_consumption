@@ -1175,14 +1175,17 @@ class TimeSeriesDataset(Dataset):
         x_dec = np.zeros((self.prediction_length, len(self.feature_cols)), dtype=np.float32)
 
                 # --- Get Prediction Window Start Timestamp ---
-        # <<< Modification Start >>>
         try:
-            pred_start_time = self.index[pred_start] # Get the timestamp for the first point in the target window
+            pred_start_time_ts = self.index[pred_start] # Get the timestamp object
+            # Convert to Unix timestamp (seconds since epoch, float64 for precision)
+            if pd.isna(pred_start_time_ts):
+                pred_start_time_unix = np.nan
+            else:
+                # Use timestamp() method for seconds since epoch
+                pred_start_time_unix = pred_start_time_ts.timestamp()
         except IndexError:
-             # Handle edge case where pred_start might be out of bounds if dataset is very small
-             logger.error(f"IndexError getting pred_start_time at index {pred_start} for sample index {idx}.")
-             # Assign a dummy value or raise error - let's assign NaT
-             pred_start_time = pd.NaT
+            logger.error(f"IndexError getting pred_start_time at index {pred_start} for sample index {idx}.")
+            pred_start_time_unix = np.nan # Use NaN for errors
 
         # --- Apply per-sample instance normalization if requested ---
         # Note: This is generally *not* recommended if the model performs its own normalization.
@@ -1201,16 +1204,16 @@ class TimeSeriesDataset(Dataset):
                  logger.warning("Applying per-sample instance normalization in Dataset __getitem__. "
                                 "This is generally not recommended if the model has internal normalization.")
 
-        # Convert numpy arrays to PyTorch tensors
+        # Convert numpy arrays and the unix timestamp to PyTorch tensors
+        # Ensure consistent dtype (float32 for data, float64 might be safer for timestamps)
         sample = {
-            'x_enc': torch.from_numpy(x_enc),
-            'x_mark_enc': torch.from_numpy(x_mark_enc),
-            'x_dec': torch.from_numpy(x_dec),
-            'x_mark_dec': torch.from_numpy(x_mark_dec),
-            'y': torch.from_numpy(y),
-            # <<< Modification Start >>>
-            'pred_start_time': pred_start_time # Add timestamp to the batch dictionary
-            # <<< Modification End >>>
+            'x_enc': torch.from_numpy(x_enc).float(),
+            'x_mark_enc': torch.from_numpy(x_mark_enc).float(),
+            'x_dec': torch.from_numpy(x_dec).float(),
+            'x_mark_dec': torch.from_numpy(x_mark_dec).float(),
+            'y': torch.from_numpy(y).float(),
+            # Store the Unix timestamp as a tensor
+            'pred_start_time': torch.tensor(pred_start_time_unix, dtype=torch.float64) # Use float64 for timestamp
         }
         return sample
 
@@ -1593,9 +1596,12 @@ def create_dataloaders(train_df: pd.DataFrame, val_df: pd.DataFrame, test_df: pd
         # Optional: Log a sample batch shape check
         try:
             batch = next(iter(train_loader))
-            logger.debug("Sample batch shapes:")
+            logger.debug("Sample batch check:")
             for key, value in batch.items():
-                logger.debug(f"- {key}: {value.shape}")
+                if isinstance(value, torch.Tensor):
+                    logger.debug(f"- {key}: type={type(value)}, shape={value.shape}, dtype={value.dtype}")
+                else: # Should ideally not happen with the fix, but good check
+                    logger.debug(f"- {key}: type={type(value)}") # Log type if not tensor
         except StopIteration:
             logger.warning("Train loader is empty - cannot check batch shapes.")
         except Exception as e:
@@ -1833,8 +1839,8 @@ def evaluate_model(model: nn.Module, test_loader: DataLoader, criterion: nn.Modu
                 x_dec = batch['x_dec'].to(device)
                 x_mark_dec = batch['x_mark_dec'].to(device)
                 y_true = batch['y'].to(device) # Scaled actuals [B, PredLen, NumTargets]
-                # Get timestamps from the batch (these are pd.Timestamp objects)
-                pred_start_times_batch = batch['pred_start_time']
+                # Get the tensor of Unix timestamps
+                pred_start_times_unix_tensor = batch['pred_start_time'].to(device) # Shape [B]
 
                 outputs = model(x_enc, x_mark_enc, x_dec, x_mark_dec) # Scaled predictions [B, PredLen, NumTargets]
 
@@ -1859,20 +1865,27 @@ def evaluate_model(model: nn.Module, test_loader: DataLoader, criterion: nn.Modu
                 all_predictions.append(preds_inv)
                 all_actuals.append(actuals_inv)
 
-                # Store timestamps, ensuring alignment with batch size (in case last batch is smaller)
-                # Assumes timestamps correspond to the start of the window for each item in the batch
-                # The number of items processed in this batch is outputs.shape[0]
-                current_batch_size = outputs.shape[0]
-                # Need to handle pd.NaT if it occurred in dataset creation
-                valid_timestamps = [ts for ts in pred_start_times_batch[:current_batch_size] if pd.notna(ts)]
-                all_pred_start_times.extend(valid_timestamps)
+                # --- Convert Unix timestamps back to pd.Timestamp ---
+                pred_start_times_unix_np = pred_start_times_unix_tensor.cpu().numpy()
+                current_batch_size = outputs.shape[0] # Use actual batch size
+
+                # Iterate through the numpy array of unix timestamps
+                batch_timestamps = []
+                for unix_ts in pred_start_times_unix_np[:current_batch_size]:
+                    if np.isnan(unix_ts):
+                        batch_timestamps.append(pd.NaT)
+                    else:
+                        # Convert float seconds since epoch back to Timestamp
+                        batch_timestamps.append(pd.to_datetime(unix_ts, unit='s'))
+
+                all_pred_start_times.extend(batch_timestamps) # Extend with the list of Timestamps
 
             except KeyError as e:
-                 logger.error(f"Missing key '{e}' in evaluation batch {i}. Skipping batch.")
-                 continue # Skip batch if timestamp or other key is missing
+                logger.error(f"Missing key '{e}' in evaluation batch {i}. Skipping batch.")
+                continue
             except Exception as e:
-                 logger.error(f"Error during evaluation batch {i}: {e}", exc_info=True)
-                 continue
+                logger.error(f"Error during evaluation batch {i}: {e}", exc_info=True)
+                continue
 
     if test_batch_count == 0:
         logger.error("No batches processed during evaluation. Cannot calculate metrics.")
