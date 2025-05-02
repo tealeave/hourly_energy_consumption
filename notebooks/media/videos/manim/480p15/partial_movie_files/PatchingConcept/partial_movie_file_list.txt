@@ -1,0 +1,12 @@
+# This file is used internally by FFMPEG.
+file 'file:/home/tealeave/projects/hourly_energy_consumption/notebooks/media/videos/manim/480p15/partial_movie_files/PatchingConcept/1879376389_2793036917_223132457.mp4'
+file 'file:/home/tealeave/projects/hourly_energy_consumption/notebooks/media/videos/manim/480p15/partial_movie_files/PatchingConcept/1853005815_332903109_3808665838.mp4'
+file 'file:/home/tealeave/projects/hourly_energy_consumption/notebooks/media/videos/manim/480p15/partial_movie_files/PatchingConcept/1853005815_2631580503_793523121.mp4'
+file 'file:/home/tealeave/projects/hourly_energy_consumption/notebooks/media/videos/manim/480p15/partial_movie_files/PatchingConcept/1853005815_2952227160_3838047749.mp4'
+file 'file:/home/tealeave/projects/hourly_energy_consumption/notebooks/media/videos/manim/480p15/partial_movie_files/PatchingConcept/1853005815_2631580503_1230759024.mp4'
+file 'file:/home/tealeave/projects/hourly_energy_consumption/notebooks/media/videos/manim/480p15/partial_movie_files/PatchingConcept/1853005815_1905151518_3991814970.mp4'
+file 'file:/home/tealeave/projects/hourly_energy_consumption/notebooks/media/videos/manim/480p15/partial_movie_files/PatchingConcept/1853005815_789064381_3939098759.mp4'
+file 'file:/home/tealeave/projects/hourly_energy_consumption/notebooks/media/videos/manim/480p15/partial_movie_files/PatchingConcept/1853005815_2064897740_51849948.mp4'
+file 'file:/home/tealeave/projects/hourly_energy_consumption/notebooks/media/videos/manim/480p15/partial_movie_files/PatchingConcept/1853005815_4161122380_1861913814.mp4'
+file 'file:/home/tealeave/projects/hourly_energy_consumption/notebooks/media/videos/manim/480p15/partial_movie_files/PatchingConcept/1853005815_789064381_704240589.mp4'
+file 'file:/home/tealeave/projects/hourly_energy_consumption/notebooks/media/videos/manim/480p15/partial_movie_files/PatchingConcept/1853005815_3311057870_4122652906.mp4'

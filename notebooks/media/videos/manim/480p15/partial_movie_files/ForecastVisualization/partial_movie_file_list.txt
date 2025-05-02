@@ -1,0 +1,7 @@
+# This file is used internally by FFMPEG.
+file 'file:/home/tealeave/projects/hourly_energy_consumption/notebooks/media/videos/manim/480p15/partial_movie_files/ForecastVisualization/1879376389_1636582025_223132457.mp4'
+file 'file:/home/tealeave/projects/hourly_energy_consumption/notebooks/media/videos/manim/480p15/partial_movie_files/ForecastVisualization/1853005815_91125210_3717763435.mp4'
+file 'file:/home/tealeave/projects/hourly_energy_consumption/notebooks/media/videos/manim/480p15/partial_movie_files/ForecastVisualization/1853005815_1471795166_3716948631.mp4'
+file 'file:/home/tealeave/projects/hourly_energy_consumption/notebooks/media/videos/manim/480p15/partial_movie_files/ForecastVisualization/1853005815_3750089407_3392048855.mp4'
+file 'file:/home/tealeave/projects/hourly_energy_consumption/notebooks/media/videos/manim/480p15/partial_movie_files/ForecastVisualization/1853005815_4150876196_289625030.mp4'
+file 'file:/home/tealeave/projects/hourly_energy_consumption/notebooks/media/videos/manim/480p15/partial_movie_files/ForecastVisualization/1853005815_3992519704_3918543317.mp4'

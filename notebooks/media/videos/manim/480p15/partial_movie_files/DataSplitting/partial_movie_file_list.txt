@@ -1,0 +1,8 @@
+# This file is used internally by FFMPEG.
+file 'file:/home/tealeave/projects/hourly_energy_consumption/notebooks/media/videos/manim/480p15/partial_movie_files/DataSplitting/1879376389_2138482397_223132457.mp4'
+file 'file:/home/tealeave/projects/hourly_energy_consumption/notebooks/media/videos/manim/480p15/partial_movie_files/DataSplitting/1853005815_2631580503_463100385.mp4'
+file 'file:/home/tealeave/projects/hourly_energy_consumption/notebooks/media/videos/manim/480p15/partial_movie_files/DataSplitting/1853005815_927611705_419120488.mp4'
+file 'file:/home/tealeave/projects/hourly_energy_consumption/notebooks/media/videos/manim/480p15/partial_movie_files/DataSplitting/1853005815_789064381_417884441.mp4'
+file 'file:/home/tealeave/projects/hourly_energy_consumption/notebooks/media/videos/manim/480p15/partial_movie_files/DataSplitting/1853005815_1765669383_851314289.mp4'
+file 'file:/home/tealeave/projects/hourly_energy_consumption/notebooks/media/videos/manim/480p15/partial_movie_files/DataSplitting/1853005815_4150876196_1719981892.mp4'
+file 'file:/home/tealeave/projects/hourly_energy_consumption/notebooks/media/videos/manim/480p15/partial_movie_files/DataSplitting/1853005815_20082482_2387139461.mp4'
